@@ -2,7 +2,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
 import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore.js";
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-import L from "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
 
 // Конфигурация Firebase / Firebase configuration
 const firebaseConfig = {
@@ -23,7 +22,7 @@ const auth = getAuth(app);
 // Анонимная аутентификация / Anonymous authentication
 signInAnonymously(auth).catch(err => console.error("Ошибка аутентификации / Auth error:", err));
 
-// Инициализация карты Leaflet / Initialize Leaflet map
+// Инициализация карты Leaflet (L теперь глобальный) / Initialize Leaflet map (L is global)
 const map = L.map('map').setView([10.933, 108.283], 13); // Центр на Муйне / Center on Mui Ne
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
   attribution: '&copy; OpenStreetMap contributors &copy; CartoDB'
@@ -223,3 +222,6 @@ document.getElementById("myPosBtn").addEventListener("click", () => {
 
 // Запуск обновления постов / Start updating posts
 updatePosts();
+
+// Глобальный deletePost для попапа / Global deletePost for popup
+window.deletePost = deletePost;
