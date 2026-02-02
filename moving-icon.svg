@@ -1,0 +1,11 @@
+<svg height="32" width="32" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient y2="100%" x2="0%" y1="0%" x1="0%" id="sandGrad">
+      <stop style="stop-color:#DAA520;stop-opacity:1" offset="0%"></stop>
+      <stop style="stop-color:#F4A460;stop-opacity:1" offset="100%"></stop>
+    </linearGradient>
+  </defs>
+  <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z" stroke-width="1" stroke="#FFFFFF" fill="url(#sandGrad)"></path>
+  <path transform="rotate(90 12 12)" d="M16 10l-4 4-4-4" opacity="0.5" fill="#000000"></path>
+  <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" opacity="0.2" fill="#000000"></path>
+</svg>
