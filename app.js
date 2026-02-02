@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, where, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
 const firebaseConfig = {
@@ -35,7 +35,6 @@ let userMarker;
 let watchId = null;
 const STATIONARY_AGE = 30 * 60 * 1000;
 const MOVING_AGE = 5 * 60 * 1000;
-const UPDATE_INTERVAL = 10000;
 
 const LAST_ADD_KEY = 'lastAddTime';
 function canAddPost() {
@@ -51,45 +50,48 @@ function recordAdd() {
   localStorage.setItem(LAST_ADD_KEY, Date.now().toString());
 }
 
-async function updatePosts() {
-  markers.forEach(m => map.removeLayer(m));
-  markers = [];
-
+// Реал-тайм слушатель (посты обновляются мгновенно)
+function setupRealtimeUpdates() {
   const now = Date.now();
-  const snapshot = await getDocs(query(postsCollection, where("timestamp", ">", now - Math.max(STATIONARY_AGE, MOVING_AGE))));
-  snapshot.forEach((docSnap) => {
-    const data = docSnap.data();
-    if (!data.timestamp || !data.timestamp.seconds) return;
-    const age = now - data.timestamp.seconds * 1000;
-    const maxAge = data.type === 'moving' ? MOVING_AGE : STATIONARY_AGE;
-    const remaining = Math.max(0, (maxAge - age) / 1000 / 60);
-    if (remaining <= 0) return;
+  const q = query(postsCollection, where("timestamp", ">", now - Math.max(STATIONARY_AGE, MOVING_AGE)));
+  onSnapshot(q, (snapshot) => {
+    // Очистка старых маркеров
+    markers.forEach(m => map.removeLayer(m));
+    markers = [];
 
-    const iconSrc = data.type === 'moving' ? 'moving-icon.svg' : 'stationary-icon.svg';
-    const direction = data.direction ? ` (${data.direction})` : '';
-    const iconHtml = `
-      <div style="position: relative;">
-        <img src="${iconSrc}" style="width:32px;height:32px;">
-        <div class="timer">${Math.floor(remaining)} мин</div>
-      </div>
-    `;
-    const customIcon = L.divIcon({
-      html: iconHtml,
-      className: 'marker-fade',
-      iconSize: [32, 32],
-      iconAnchor: [16, 32],
-      popupAnchor: [0, -32]
+    const currentTime = Date.now();
+    snapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (!data.timestamp || !data.timestamp.seconds) return;
+      const age = currentTime - data.timestamp.seconds * 1000;
+      const maxAge = data.type === 'moving' ? MOVING_AGE : STATIONARY_AGE;
+      const remaining = Math.max(0, (maxAge - age) / 1000 / 60);
+      if (remaining <= 0) return;
+
+      const iconSrc = data.type === 'moving' ? 'moving-icon.svg' : 'stationary-icon.svg';
+      const direction = data.direction ? ` (${data.direction})` : '';
+      const iconHtml = `
+        <div style="position: relative;">
+          <img src="${iconSrc}" style="width:32px;height:32px;">
+          <div class="timer">${Math.floor(remaining)} мин</div>
+        </div>
+      `;
+      const customIcon = L.divIcon({
+        html: iconHtml,
+        className: 'marker-fade marker-visible',
+        iconSize: [32, 32],
+        iconAnchor: [16, 32],
+        popupAnchor: [0, -32]
+      });
+
+      const marker = L.marker([data.lat, data.lng], { icon: customIcon }).addTo(map)
+        .bindPopup(`Пост ДПС${direction}<br>Добавлен: ${new Date(data.timestamp.seconds * 1000).toLocaleTimeString()}<br><button onclick="deletePost('${docSnap.id}')">Удалить</button>`);
+
+      markers.push(marker);
     });
-
-    const marker = L.marker([data.lat, data.lng], { icon: customIcon }).addTo(map)
-      .bindPopup(`Пост ДПС${direction}<br>Добавлен: ${new Date(data.timestamp.seconds * 1000).toLocaleTimeString()}<br><button onclick="deletePost('${docSnap.id}')">Удалить</button>`);
-
-    setTimeout(() => marker._icon.classList.add('marker-visible'), 100);
-    markers.push(marker);
   });
 }
-setInterval(updatePosts, UPDATE_INTERVAL);
-updatePosts();
+setupRealtimeUpdates(); // Запуск реал-тайм
 
 document.getElementById('add-btn').addEventListener('click', () => {
   if (!canAddPost()) return;
@@ -99,63 +101,61 @@ document.getElementById('add-btn').addEventListener('click', () => {
     message: 'Выберите тип',
     buttons: [
       { type: 'default', id: 'stationary', text: 'Стоячий пост' },
-      { type: 'default', id: 'moving', text: 'Движущийся фургон' }
+      { type: 'cancel', text: 'Отмена' }
     ]
   }, (typeId) => {
-    if (!typeId) return;
-    tg.showPopup({
-      title: 'Способ добавления',
-      message: 'Выберите способ',
-      buttons: [
-        { type: 'default', id: 'geo', text: 'По геолокации' },
-        { type: 'default', id: 'manual', text: 'Вручную (тап на карте)' }
-      ]
-    }, async (methodId) => {
-      if (!methodId) return;
-      let lat, lng;
-      if (methodId === 'geo') {
-        try {
-          const pos = await new Promise((resolve, reject) => {
-            navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 });
-          });
-          lat = pos.coords.latitude;
-          lng = pos.coords.longitude;
-          addPost(typeId, lat, lng, null);
-        } catch (err) {
-          tg.showAlert('Не удалось получить геолокацию. Разрешите доступ в настройках.');
-        }
-      } else {
-        tg.showAlert('Тапните на карту для выбора точки');
-        map.once('click', (e) => {
-          lat = e.latlng.lat;
-          lng = e.latlng.lng;
-          handleDirection(typeId, lat, lng);
-        });
-      }
-    });
+    if (typeId !== 'stationary') return;
+    chooseAddMethod(typeId);
   });
 });
 
-function handleDirection(type, lat, lng) {
+function chooseAddMethod(type) {
+  tg.showPopup({
+    title: 'Способ добавления',
+    message: 'Выберите способ',
+    buttons: [
+      { type: 'default', id: 'geo', text: 'По геолокации' },
+      { type: 'default', id: 'manual', text: 'Вручную (тап)' },
+      { type: 'cancel', text: 'Отмена' }
+    ]
+  }, (methodId) => {
+    if (!methodId) return;
+    if (methodId === 'geo') {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => handlePostAddition(type, pos.coords.latitude, pos.coords.longitude),
+        () => tg.showAlert('Разрешите доступ к геолокации в настройках Telegram/браузера'),
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    } else {
+      tg.showAlert('Тапните на карту для выбора точки');
+      map.once('click', (e) => {
+        handlePostAddition(type, e.latlng.lat, e.latlng.lng);
+      });
+    }
+  });
+}
+
+function handlePostAddition(type, lat, lng) {
   if (type === 'stationary') {
-    addPost(type, lat, lng, null);
+    addPostToDb(type, lat, lng, null);
   } else {
     tg.showPopup({
-      title: 'Направление движения',
+      title: 'Направление',
       message: 'Куда ехал фургон?',
       buttons: [
         { type: 'default', id: 'N', text: 'Север' },
         { type: 'default', id: 'S', text: 'Юг' },
         { type: 'default', id: 'E', text: 'Восток' },
-        { type: 'default', id: 'W', text: 'Запад' }
+        { type: 'default', id: 'W', text: 'Запад' },
+        { type: 'cancel', text: 'Отмена' }
       ]
     }, (dir) => {
-      if (dir) addPost(type, lat, lng, dir);
+      if (dir) addPostToDb(type, lat, lng, dir);
     });
   }
 }
 
-async function addPost(type, lat, lng, direction) {
+async function addPostToDb(type, lat, lng, direction) {
   try {
     await addDoc(postsCollection, {
       type,
@@ -166,24 +166,25 @@ async function addPost(type, lat, lng, direction) {
       userId: tg.initDataUnsafe?.user?.id || 'anonymous'
     });
     recordAdd();
-    updatePosts();
     tg.HapticFeedback.success();
-    tg.showAlert('Пост добавлен!');
+    tg.showAlert('Пост успешно добавлен! Виден всем сразу.');
   } catch (err) {
     tg.showAlert('Ошибка добавления: ' + err.message);
   }
 }
 
 window.deletePost = async (id) => {
-  await deleteDoc(doc(db, "policePosts", id));
-  updatePosts();
-  tg.showAlert('Пост удалён');
+  try {
+    await deleteDoc(doc(db, "policePosts", id));
+    tg.showAlert('Пост удалён');
+  } catch (err) {
+    tg.showAlert('Ошибка удаления');
+  }
 };
 
-// Кнопка "Моя позиция" (отслеживание + центрирование)
+// Кнопка "Моя позиция"
 document.getElementById('location-btn').addEventListener('click', () => {
   if (watchId) {
-    // Выключить
     navigator.geolocation.clearWatch(watchId);
     watchId = null;
     if (userMarker) map.removeLayer(userMarker);
@@ -191,7 +192,6 @@ document.getElementById('location-btn').addEventListener('click', () => {
     return;
   }
 
-  // Включить трекинг
   watchId = navigator.geolocation.watchPosition((pos) => {
     const { latitude, longitude } = pos.coords;
     if (!userMarker) {
@@ -201,10 +201,8 @@ document.getElementById('location-btn').addEventListener('click', () => {
     } else {
       userMarker.setLatLng([latitude, longitude]);
     }
-    // Только центрируем, без изменения зума
-    map.panTo([latitude, longitude]);
+    map.panTo([latitude, longitude]); // Только центр, без зума
 
-    // Предупреждение о близости постов
     markers.forEach(m => {
       const dist = map.distance([latitude, longitude], m.getLatLng());
       if (dist < 500) {
@@ -212,12 +210,12 @@ document.getElementById('location-btn').addEventListener('click', () => {
         tg.showAlert(`ДПС рядом! ~${Math.round(dist)} м`);
       }
     });
-  }, (err) => tg.showAlert('Геолокация недоступна: ' + err.message), { enableHighAccuracy: true });
+  }, (err) => tg.showAlert('Геолокация недоступна'), { enableHighAccuracy: true });
 
   document.getElementById('location-btn').textContent = 'Остановить';
 });
 
-// Адаптация темы
+// Тема
 if (tg.themeParams) {
   document.body.style.backgroundColor = tg.themeParams.bg_color || '#121212';
 }
