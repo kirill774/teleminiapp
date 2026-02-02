@@ -2,7 +2,6 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebas
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
-// Твой Firebase config (вставлен)
 const firebaseConfig = {
   apiKey: "AIzaSyBClJ_q3_sCZaXiVap2NlXXyXef8xz1Crk",
   authDomain: "mupolic.firebaseapp.com",
@@ -18,39 +17,32 @@ const db = getFirestore(app);
 const auth = getAuth(app);
 const postsCollection = collection(db, "policePosts");
 
-// Аутентификация (анонимная)
-signInAnonymously(auth)
-  .then(() => console.log("Authenticated"))
-  .catch((error) => console.error("Auth error:", error));
+signInAnonymously(auth).catch((error) => console.error("Auth error:", error));
 
-// Telegram Web App
 const tg = window.Telegram.WebApp;
 tg.ready();
 tg.expand();
 
-// Карта (центр на Муйне, Вьетнам)
 const map = L.map('map', { zoomControl: true }).setView([10.933, 108.283], 13);
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" style="color:#fff;">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" style="color:#fff;">CARTO</a>',
+  attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
   subdomains: 'abcd',
   maxZoom: 20
 }).addTo(map);
 
-// Массивы
 let markers = [];
 let userMarker;
-let watchId;
-const STATIONARY_AGE = 30 * 60 * 1000; // 30 мин
-const MOVING_AGE = 5 * 60 * 1000; // 5 мин
-const UPDATE_INTERVAL = 10000; // 10 сек
+let watchId = null;
+const STATIONARY_AGE = 30 * 60 * 1000;
+const MOVING_AGE = 5 * 60 * 1000;
+const UPDATE_INTERVAL = 10000;
 
-// Антиспам: Последнее время добавления (client-side)
 const LAST_ADD_KEY = 'lastAddTime';
 function canAddPost() {
   const lastAdd = parseInt(localStorage.getItem(LAST_ADD_KEY) || '0');
   const now = Date.now();
-  if (now - lastAdd < 60000) { // 1 минута cooldown
-    tg.showAlert('Подождите минуту перед добавлением нового.');
+  if (now - lastAdd < 60000) {
+    tg.showAlert('Подождите минуту перед добавлением нового поста.');
     return false;
   }
   return true;
@@ -59,22 +51,16 @@ function recordAdd() {
   localStorage.setItem(LAST_ADD_KEY, Date.now().toString());
 }
 
-// Функция обновления постов
 async function updatePosts() {
-  // Очистка старых маркеров плавно
-  markers.forEach(m => {
-    m._icon.classList.remove('marker-visible');
-    m._icon.classList.add('marker-fade');
-    setTimeout(() => map.removeLayer(m), 1000); // Синхронизировано с transition 1s
-  });
+  markers.forEach(m => map.removeLayer(m));
   markers = [];
 
   const now = Date.now();
-  const q = query(postsCollection, where("timestamp", ">", now - Math.max(STATIONARY_AGE, MOVING_AGE)));
-  const snapshot = await getDocs(q);
+  const snapshot = await getDocs(query(postsCollection, where("timestamp", ">", now - Math.max(STATIONARY_AGE, MOVING_AGE))));
   snapshot.forEach((docSnap) => {
     const data = docSnap.data();
-    const age = now - data.timestamp.seconds * 1000; // Поскольку serverTimestamp возвращает объект
+    if (!data.timestamp || !data.timestamp.seconds) return;
+    const age = now - data.timestamp.seconds * 1000;
     const maxAge = data.type === 'moving' ? MOVING_AGE : STATIONARY_AGE;
     const remaining = Math.max(0, (maxAge - age) / 1000 / 60);
     if (remaining <= 0) return;
@@ -95,180 +81,143 @@ async function updatePosts() {
       popupAnchor: [0, -32]
     });
 
-    const marker = L.marker([data.lat, data.lng], { icon: customIcon })
-      .addTo(map)
-      .bindPopup(`Пост ДПС${direction} (добавлен ${new Date(data.timestamp.seconds * 1000).toLocaleTimeString()})<br><button onclick="deletePost('${docSnap.id}')">Удалить</button>`);
-    
-    // Плавное появление
-    setTimeout(() => {
-      marker._icon.classList.remove('marker-fade');
-      marker._icon.classList.add('marker-visible');
-    }, 100);
+    const marker = L.marker([data.lat, data.lng], { icon: customIcon }).addTo(map)
+      .bindPopup(`Пост ДПС${direction}<br>Добавлен: ${new Date(data.timestamp.seconds * 1000).toLocaleTimeString()}<br><button onclick="deletePost('${docSnap.id}')">Удалить</button>`);
 
+    setTimeout(() => marker._icon.classList.add('marker-visible'), 100);
     markers.push(marker);
   });
 }
 setInterval(updatePosts, UPDATE_INTERVAL);
 updatePosts();
 
-// Добавление
 document.getElementById('add-btn').addEventListener('click', () => {
   if (!canAddPost()) return;
 
   tg.showPopup({
-    title: 'Добавить',
+    title: 'Добавить пост',
     message: 'Выберите тип',
     buttons: [
-      { id: 'stationary', text: 'Стоячий пост' },
-      { id: 'moving', text: 'Движущийся фургон' }
+      { type: 'default', id: 'stationary', text: 'Стоячий пост' },
+      { type: 'default', id: 'moving', text: 'Движущийся фургон' }
     ]
   }, (typeId) => {
-    const type = typeId;
+    if (!typeId) return;
     tg.showPopup({
       title: 'Способ добавления',
       message: 'Выберите способ',
       buttons: [
-        { id: 'geo', text: 'По геолокации' },
-        { id: 'manual', text: 'Вручную' }
+        { type: 'default', id: 'geo', text: 'По геолокации' },
+        { type: 'default', id: 'manual', text: 'Вручную (тап на карте)' }
       ]
     }, async (methodId) => {
+      if (!methodId) return;
       let lat, lng;
-      try {
-        if (methodId === 'geo') {
-          const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true }));
+      if (methodId === 'geo') {
+        try {
+          const pos = await new Promise((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000 });
+          });
           lat = pos.coords.latitude;
           lng = pos.coords.longitude;
-        } else {
-          map.once('click', (e) => {
-            lat = e.latlng.lat;
-            lng = e.latlng.lng;
-            handleDirectionAndAdd(type, lat, lng);
-          });
-          tg.showAlert('Тапните на карту');
-          return;
+          addPost(typeId, lat, lng, null);
+        } catch (err) {
+          tg.showAlert('Не удалось получить геолокацию. Разрешите доступ в настройках.');
         }
-        handleDirectionAndAdd(type, lat, lng);
-      } catch (err) {
-        tg.showAlert('Ошибка геолокации: ' + err.message);
+      } else {
+        tg.showAlert('Тапните на карту для выбора точки');
+        map.once('click', (e) => {
+          lat = e.latlng.lat;
+          lng = e.latlng.lng;
+          handleDirection(typeId, lat, lng);
+        });
       }
     });
   });
 });
 
-function handleDirectionAndAdd(type, lat, lng) {
+function handleDirection(type, lat, lng) {
   if (type === 'stationary') {
     addPost(type, lat, lng, null);
   } else {
     tg.showPopup({
-      title: 'Направление',
-      message: 'Выберите сторону',
+      title: 'Направление движения',
+      message: 'Куда ехал фургон?',
       buttons: [
-        { id: 'N', text: 'Север' },
-        { id: 'S', text: 'Юг' },
-        { id: 'E', text: 'Восток' },
-        { id: 'W', text: 'Запад' }
+        { type: 'default', id: 'N', text: 'Север' },
+        { type: 'default', id: 'S', text: 'Юг' },
+        { type: 'default', id: 'E', text: 'Восток' },
+        { type: 'default', id: 'W', text: 'Запад' }
       ]
-    }, (dirId) => {
-      addPost(type, lat, lng, dirId);
+    }, (dir) => {
+      if (dir) addPost(type, lat, lng, dir);
     });
   }
 }
 
 async function addPost(type, lat, lng, direction) {
-  await addDoc(postsCollection, {
-    type,
-    lat,
-    lng,
-    direction,
-    timestamp: serverTimestamp(), // Исправлено на serverTimestamp для точности
-    userId: tg.initDataUnsafe?.user?.id || 'anonymous'
-  });
-  recordAdd();
-  updatePosts();
-  tg.HapticFeedback.impactOccurred('light');
+  try {
+    await addDoc(postsCollection, {
+      type,
+      lat,
+      lng,
+      direction,
+      timestamp: serverTimestamp(),
+      userId: tg.initDataUnsafe?.user?.id || 'anonymous'
+    });
+    recordAdd();
+    updatePosts();
+    tg.HapticFeedback.success();
+    tg.showAlert('Пост добавлен!');
+  } catch (err) {
+    tg.showAlert('Ошибка добавления: ' + err.message);
+  }
 }
 
-// Удаление поста
 window.deletePost = async (id) => {
-  try {
-    await deleteDoc(doc(db, "policePosts", id));
-    updatePosts();
-    tg.showAlert('Удалено');
-  } catch (err) {
-    tg.showAlert('Ошибка: ' + err.message);
-  }
+  await deleteDoc(doc(db, "policePosts", id));
+  updatePosts();
+  tg.showAlert('Пост удалён');
 };
 
-// Кнопка "Где я"
-document.getElementById('where-am-i-btn').addEventListener('click', async () => {
-  try {
-    const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true }));
-    const { latitude, longitude } = pos.coords;
-    map.flyTo([latitude, longitude], 15, { animate: true, duration: 1.5 }); // Увеличил до 1.5s
-    if (!userMarker) {
-      userMarker = L.marker([latitude, longitude], {
-        icon: L.icon({ iconUrl: 'user-icon.svg', iconSize: [24, 24], iconAnchor: [12, 24], popupAnchor: [0, -24] })
-      }).addTo(map).bindPopup('Ваша позиция');
-    } else {
-      userMarker.setLatLng([latitude, longitude]);
-    }
-    setTimeout(() => {
-      if (userMarker && !watchId) {
-        map.removeLayer(userMarker);
-        userMarker = null;
-      }
-    }, 10000);
-  } catch (err) {
-    tg.showAlert('Ошибка геолокации: ' + err.message);
-  }
-});
-
-// Отслеживание геолокации
-document.getElementById('track-btn').addEventListener('click', () => {
+// Кнопка "Моя позиция" (отслеживание + центрирование)
+document.getElementById('location-btn').addEventListener('click', () => {
   if (watchId) {
+    // Выключить
     navigator.geolocation.clearWatch(watchId);
     watchId = null;
-    if (userMarker) {
-      map.removeLayer(userMarker);
-      userMarker = null;
-    }
-    document.getElementById('track-btn').textContent = 'Отслеживать';
+    if (userMarker) map.removeLayer(userMarker);
+    document.getElementById('location-btn').textContent = 'Моя позиция';
     return;
   }
 
+  // Включить трекинг
   watchId = navigator.geolocation.watchPosition((pos) => {
     const { latitude, longitude } = pos.coords;
     if (!userMarker) {
       userMarker = L.marker([latitude, longitude], {
-        icon: L.icon({ iconUrl: 'user-icon.svg', iconSize: [24, 24], iconAnchor: [12, 24], popupAnchor: [0, -24] })
-      }).addTo(map).bindPopup('Ваша позиция');
+        icon: L.icon({ iconUrl: 'user-icon.svg', iconSize: [24, 24], iconAnchor: [12, 24] })
+      }).addTo(map);
     } else {
       userMarker.setLatLng([latitude, longitude]);
     }
-    map.flyTo([latitude, longitude], 15, { animate: true, duration: 1.0 }); // Увеличил до 1s
+    // Только центрируем, без изменения зума
+    map.panTo([latitude, longitude]);
 
-    // Проверка близости
+    // Предупреждение о близости постов
     markers.forEach(m => {
-      const dist = map.distance(userMarker.getLatLng(), m.getLatLng());
+      const dist = map.distance([latitude, longitude], m.getLatLng());
       if (dist < 500) {
         tg.HapticFeedback.notificationOccurred('warning');
-        tg.showAlert(`Внимание! ДПС в ${Math.round(dist)} метрах!`);
+        tg.showAlert(`ДПС рядом! ~${Math.round(dist)} м`);
       }
     });
-  }, (err) => {
-    tg.showAlert('Ошибка геолокации: ' + err.message);
-  }, { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 });
+  }, (err) => tg.showAlert('Геолокация недоступна: ' + err.message), { enableHighAccuracy: true });
 
-  document.getElementById('track-btn').textContent = 'Остановить';
+  document.getElementById('location-btn').textContent = 'Остановить';
 });
 
-// Адаптация под тему Telegram
+// Адаптация темы
 if (tg.themeParams) {
   document.body.style.backgroundColor = tg.themeParams.bg_color || '#121212';
-  document.querySelector('.bottom-bar').style.backgroundColor = tg.themeParams.secondary_bg_color || '#1c1c1c';
-  const buttons = document.querySelectorAll('.button');
-  buttons.forEach(btn => {
-    btn.style.backgroundColor = tg.themeParams.button_color || '#1E88E5';
-    btn.style.color = tg.themeParams.button_text_color || '#fff';
-  });
 }
