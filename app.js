@@ -20,9 +20,11 @@ const db = getFirestore(app);
 const auth = getAuth(app);
 
 // Анонимная аутентификация / Anonymous authentication
-signInAnonymously(auth).catch(err => console.error("Ошибка аутентификации / Auth error:", err));
+signInAnonymously(auth).then(() => {
+  console.log("Аутентификация успешна / Auth successful");
+}).catch(err => console.error("Ошибка аутентификации / Auth error:", err));
 
-// Инициализация карты Leaflet (L теперь глобальный) / Initialize Leaflet map (L is global)
+// Инициализация карты Leaflet / Initialize Leaflet map
 const map = L.map('map').setView([10.933, 108.283], 13); // Центр на Муйне / Center on Mui Ne
 L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
   attribution: '&copy; OpenStreetMap contributors &copy; CartoDB'
@@ -34,21 +36,55 @@ let tracking = false;
 let myLatLng = null;
 let isAdding = false;
 
+// Заглушка для Telegram.WebApp для тестирования в браузере / Stub for Telegram.WebApp in browser
+let tg = window.Telegram ? window.Telegram.WebApp : null;
+if (!tg) {
+  console.warn("Telegram.WebApp не найден, использую заглушку / Telegram.WebApp not found, using stub");
+  tg = {
+    showAlert: (msg) => alert(msg),
+    showPopup: (options, callback) => {
+      let btnTexts = options.buttons.map(b => b.text).join('\n');
+      let res = prompt(options.title + '\nВыберите: ' + btnTexts);
+      let btn = options.buttons.find(b => b.text.toLowerCase() === (res || '').toLowerCase());
+      callback(btn ? btn.id : null);
+    },
+    ready: () => console.log("Stub ready")
+  };
+}
+
+// Инициализация Telegram WebApp / Initialize Telegram WebApp
+tg.ready();
+
+// Инициализация геолокации при запуске / Initialize geolocation on start
+navigator.geolocation.getCurrentPosition(pos => {
+  myLatLng = [pos.coords.latitude, pos.coords.longitude];
+  console.log("Начальная позиция получена / Initial position received:", myLatLng);
+}, err => {
+  console.error("Ошибка начальной геолокации / Initial geolocation error:", err);
+  tg.showAlert("Разрешите геолокацию для работы приложения / Allow geolocation for the app");
+}, { enableHighAccuracy: true, timeout: 10000 });
+
 // Отслеживание геолокации пользователя / Watch user geolocation
 navigator.geolocation.watchPosition(pos => {
   myLatLng = [pos.coords.latitude, pos.coords.longitude];
+  console.log("Позиция обновлена / Position updated:", myLatLng);
   if (tracking && userMarker) {
     userMarker.setLatLng(myLatLng);
     map.panTo(myLatLng);
   }
-}, err => console.error("Ошибка геолокации / Geolocation error:", err), { enableHighAccuracy: true, maximumAge: 10000, timeout: 5000 });
+}, err => console.error("Ошибка геолокации / Geolocation error:", err), { enableHighAccuracy: true, maximumAge: 10000, timeout: 10000 });
 
 // Функция добавления поста / Function to add a post
 const addPost = async (lat, lng, type, color, direction = null) => {
+  if (!auth.currentUser) {
+    tg.showAlert("Аутентификация не завершена, попробуйте позже / Auth not ready, try later");
+    return;
+  }
+
   // Антиспам: проверка на кулдаун 1 минута / Anti-spam: check 1-minute cooldown
   const lastAddTime = localStorage.getItem('lastAddTime');
   if (lastAddTime && Date.now() - parseInt(lastAddTime) < 60000) {
-    Telegram.WebApp.showAlert("Подождите 1 минуту перед добавлением нового поста / Wait 1 minute before adding a new post");
+    tg.showAlert("Подождите 1 минуту перед добавлением нового поста / Wait 1 minute before adding a new post");
     return;
   }
 
@@ -59,15 +95,16 @@ const addPost = async (lat, lng, type, color, direction = null) => {
       lat,
       lng,
       type,
-      color,  // Новый поле: цвет иконки / New field: icon color
+      color,
       direction,
       timestamp: serverTimestamp(),
       userId: auth.currentUser.uid
     });
     localStorage.setItem('lastAddTime', Date.now());
-    Telegram.WebApp.showAlert("Пост добавлен! / Post added!");
+    tg.showAlert("Пост добавлен! / Post added!");
   } catch (e) {
-    Telegram.WebApp.showAlert("Ошибка: " + e.message);
+    tg.showAlert("Ошибка: " + e.message);
+    console.error("Ошибка добавления / Add error:", e);
   } finally {
     isAdding = false;
   }
@@ -77,9 +114,10 @@ const addPost = async (lat, lng, type, color, direction = null) => {
 const deletePost = async (id) => {
   try {
     await deleteDoc(doc(db, "policePosts", id));
-    Telegram.WebApp.showAlert("Пост удалён / Post deleted");
+    tg.showAlert("Пост удалён / Post deleted");
   } catch (e) {
-    Telegram.WebApp.showAlert("Ошибка удаления / Delete error: " + e.message);
+    tg.showAlert("Ошибка удаления / Delete error: " + e.message);
+    console.error("Ошибка удаления / Delete error:", e);
   }
 };
 
@@ -93,6 +131,7 @@ const updatePosts = () => {
 
     snapshot.docs.forEach(docSnap => {
       const data = docSnap.data();
+      if (!data.timestamp) return;
       const age = (Date.now() - data.timestamp.toMillis()) / 1000;  // Возраст в секундах / Age in seconds
       if (age > 1800) return;  // Удаляем если старше 30 минут (1800 сек) / Skip if older than 30 minutes
 
@@ -118,22 +157,20 @@ const updatePosts = () => {
       `;
       if (data.direction) popupContent += `Направление: ${data.direction}<br>`;
       if (data.userId === auth.currentUser.uid) {
-        popupContent += `<button class="btn-delete" onclick="deletePost('${docSnap.id}')">Удалить</button>`;
+        popupContent += `<button class="btn-delete" onclick="window.deletePost('${docSnap.id}')">Удалить</button>`;
       }
       marker.bindPopup(popupContent);
     });
-  });
+  }, err => console.error("Ошибка snapshot / Snapshot error:", err));
 };
-
-// Инициализация Telegram WebApp / Initialize Telegram WebApp
-Telegram.WebApp.ready();
 
 // Обработчик кнопки "Добавить" / Add button handler
 document.getElementById("addBtn").addEventListener("click", () => {
+  console.log("Кнопка 'Добавить' нажата / Add button clicked");
   if (isAdding) return;
 
   // Выбор типа поста / Choose post type
-  Telegram.WebApp.showPopup({
+  tg.showPopup({
     title: "Выберите тип поста",
     buttons: [
       { id: "stationary", text: "Стоячий пост" },
@@ -141,10 +178,10 @@ document.getElementById("addBtn").addEventListener("click", () => {
     ]
   }, (typeRes) => {
     if (!typeRes) return;
-    const type = typeRes.id;
+    const type = typeRes;
 
     // Выбор цвета иконки / Choose icon color
-    Telegram.WebApp.showPopup({
+    tg.showPopup({
       title: "Выберите цвет иконки",
       buttons: [
         { id: "darkgreen", text: "Чуть тёмный зелёный" },
@@ -152,12 +189,12 @@ document.getElementById("addBtn").addEventListener("click", () => {
       ]
     }, (colorRes) => {
       if (!colorRes) return;
-      const color = colorRes.id;
+      const color = colorRes;
 
       // Если движущийся — выбор направления (опционально) / If moving — choose direction (optional)
       let direction = null;
       if (type === 'moving') {
-        Telegram.WebApp.showPopup({
+        tg.showPopup({
           title: "Выберите направление (опционально)",
           buttons: [
             { id: "north", text: "Север" },
@@ -167,7 +204,7 @@ document.getElementById("addBtn").addEventListener("click", () => {
             { id: "none", text: "Без направления" }
           ]
         }, (dirRes) => {
-          if (dirRes && dirRes.id !== "none") direction = dirRes.text;
+          if (dirRes && dirRes !== "none") direction = dirRes;
 
           // Выбор способа добавления / Choose add method
           proceedToAdd(type, color, direction);
@@ -181,7 +218,7 @@ document.getElementById("addBtn").addEventListener("click", () => {
 
 // Вспомогательная функция для выбора способа добавления / Helper function for add method
 const proceedToAdd = (type, color, direction) => {
-  Telegram.WebApp.showPopup({
+  tg.showPopup({
     title: "Способ добавления",
     buttons: [
       { id: "geo", text: "По геолокации" },
@@ -189,12 +226,14 @@ const proceedToAdd = (type, color, direction) => {
     ]
   }, async (addRes) => {
     if (!addRes) return;
-    if (addRes.id === "geo") {
-      navigator.geolocation.getCurrentPosition(pos => {
-        addPost(pos.coords.latitude, pos.coords.longitude, type, color, direction);
-      }, err => Telegram.WebApp.showAlert("Геолокация недоступна / Geolocation unavailable"));
-    } else if (addRes.id === "tap") {
-      Telegram.WebApp.showAlert("Тапните на карту / Tap on the map");
+    if (addRes === "geo") {
+      if (!myLatLng) {
+        tg.showAlert("Геолокация недоступна, попробуйте позже / Geolocation unavailable, try later");
+        return;
+      }
+      await addPost(myLatLng[0], myLatLng[1], type, color, direction);
+    } else if (addRes === "tap") {
+      tg.showAlert("Тапните на карту / Tap on the map");
       map.once('click', async (e) => {
         await addPost(e.latlng.lat, e.latlng.lng, type, color, direction);
       });
@@ -204,19 +243,20 @@ const proceedToAdd = (type, color, direction) => {
 
 // Обработчик кнопки "Моя позиция" / My position button handler
 document.getElementById("myPosBtn").addEventListener("click", () => {
+  console.log("Кнопка 'Моя позиция' нажата / My position button clicked");
   if (!myLatLng) {
-    Telegram.WebApp.showAlert("Позиция не определена / Position not determined");
+    tg.showAlert("Позиция не определена. Разрешите геолокацию и подождите / Position not determined. Allow geolocation and wait");
     return;
   }
   if (!tracking) {
     tracking = true;
     userMarker = L.marker(myLatLng, { icon: L.icon({ iconUrl: 'user-icon.svg', iconSize: [30, 30] }) }).addTo(map);
     map.flyTo(myLatLng, 15, { duration: 1.5 });
-    Telegram.WebApp.showAlert("Отслеживание включено / Tracking enabled");
+    tg.showAlert("Отслеживание включено / Tracking enabled");
   } else {
     tracking = false;
     if (userMarker) map.removeLayer(userMarker);
-    Telegram.WebApp.showAlert("Отслеживание выключено / Tracking disabled");
+    tg.showAlert("Отслеживание выключено / Tracking disabled");
   }
 });
 
